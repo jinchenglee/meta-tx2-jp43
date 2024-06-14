@@ -1,0 +1,118 @@
+From 462c3edcb75794951112076aedd8fb1d11dd79c7 Mon Sep 17 00:00:00 2001
+From: OpenEmbedded <oe.patch@oe>
+Date: Thu, 13 Jun 2024 11:43:51 -0700
+Subject: [PATCH] Workaround build/installation issues related to perf-1.0 when
+ compiling core-image-sato-sdk, due to python2 vs. python3 differences.
+
+---
+ tools/perf/util/python.c  | 16 ++++++++++++----
+ tools/perf/util/setup.py  |  6 ++++--
+ tools/perf/util/srcline.c | 18 +++++++++++++++++-
+ 3 files changed, 33 insertions(+), 7 deletions(-)
+
+diff --git a/tools/perf/util/python.c b/tools/perf/util/python.c
+index a5fbc012e3df..7d4542346d2b 100644
+--- a/tools/perf/util/python.c
++++ b/tools/perf/util/python.c
+@@ -513,7 +513,9 @@ static int pyrf_cpu_map__init(struct pyrf_cpu_map *pcpus,
+ static void pyrf_cpu_map__delete(struct pyrf_cpu_map *pcpus)
+ {
+ 	cpu_map__put(pcpus->cpus);
+-	pcpus->ob_type->tp_free((PyObject*)pcpus);
++	// Python2 vs. 3 incompatibility
++	//pcpus->ob_type->tp_free((PyObject*)pcpus);
++	Py_TYPE(pcpus)->tp_free((PyObject*)pcpus);
+ }
+ 
+ static Py_ssize_t pyrf_cpu_map__length(PyObject *obj)
+@@ -582,7 +584,9 @@ static int pyrf_thread_map__init(struct pyrf_thread_map *pthreads,
+ static void pyrf_thread_map__delete(struct pyrf_thread_map *pthreads)
+ {
+ 	thread_map__put(pthreads->threads);
+-	pthreads->ob_type->tp_free((PyObject*)pthreads);
++	// Python2 vs. 3 incompatibility
++	//pthreads->ob_type->tp_free((PyObject*)pthreads);
++	Py_TYPE(pthreads)->tp_free((PyObject*)pthreads);
+ }
+ 
+ static Py_ssize_t pyrf_thread_map__length(PyObject *obj)
+@@ -744,7 +748,9 @@ static int pyrf_evsel__init(struct pyrf_evsel *pevsel,
+ static void pyrf_evsel__delete(struct pyrf_evsel *pevsel)
+ {
+ 	perf_evsel__exit(&pevsel->evsel);
+-	pevsel->ob_type->tp_free((PyObject*)pevsel);
++	// Python2 vs. 3 incompatibility
++	//pevsel->ob_type->tp_free((PyObject*)pevsel);
++	Py_TYPE(pevsel)->tp_free((PyObject*)pevsel);
+ }
+ 
+ static PyObject *pyrf_evsel__open(struct pyrf_evsel *pevsel,
+@@ -835,7 +841,9 @@ static int pyrf_evlist__init(struct pyrf_evlist *pevlist,
+ static void pyrf_evlist__delete(struct pyrf_evlist *pevlist)
+ {
+ 	perf_evlist__exit(&pevlist->evlist);
+-	pevlist->ob_type->tp_free((PyObject*)pevlist);
++	// Python2 vs. 3 incompatibility
++	//pevlist->ob_type->tp_free((PyObject*)pevlist);
++	Py_TYPE(pevlist)->tp_free((PyObject*)pevlist);
+ }
+ 
+ static PyObject *pyrf_evlist__mmap(struct pyrf_evlist *pevlist,
+diff --git a/tools/perf/util/setup.py b/tools/perf/util/setup.py
+index c8680984d2d6..5a1052257bbc 100644
+--- a/tools/perf/util/setup.py
++++ b/tools/perf/util/setup.py
+@@ -28,11 +28,13 @@ build_tmp = getenv('PYTHON_EXTBUILD_TMP')
+ libtraceevent = getenv('LIBTRACEEVENT')
+ libapikfs = getenv('LIBAPI')
+ 
+-ext_sources = [f.strip() for f in file('util/python-ext-sources')
++# WAR: from python2.x to python3.
++#ext_sources = [f.strip() for f in file('util/python-ext-sources')
++ext_sources = [f.strip() for f in open('util/python-ext-sources')
+ 				if len(f.strip()) > 0 and f[0] != '#']
+ 
+ # use full paths with source files
+-ext_sources = map(lambda x: '%s/%s' % (src_perf, x) , ext_sources)
++ext_sources = ['%s/%s' % (src_perf, x) for x in ext_sources]
+ 
+ perf = Extension('perf',
+ 		  sources = ext_sources,
+diff --git a/tools/perf/util/srcline.c b/tools/perf/util/srcline.c
+index b4db3f48e3b0..5b087ebaa54f 100644
+--- a/tools/perf/util/srcline.c
++++ b/tools/perf/util/srcline.c
+@@ -86,16 +86,32 @@ static void find_address_in_section(bfd *abfd, asection *section, void *data)
+ 	bfd_vma pc, vma;
+ 	bfd_size_type size;
+ 	struct a2l_data *a2l = data;
++// Manually patched according to https://lists.yoctoproject.org/g/meta-intel/topic/patch_2_2_linux_intel/71501209.
++	flagword flags;
+ 
+ 	if (a2l->found)
+ 		return;
+ 
+-	if ((bfd_get_section_flags(abfd, section) & SEC_ALLOC) == 0)
++#ifdef bfd_get_section_flags
++	flags = bfd_get_section_flags(abfd, section);
++#else
++	flags = bfd_section_flags(section);
++#endif
++	if ((flags & SEC_ALLOC) == 0)
+ 		return;
+ 
+ 	pc = a2l->addr;
++#ifdef bfd_get_section_vma
+ 	vma = bfd_get_section_vma(abfd, section);
++#else
++	vma = bfd_section_vma(section);
++#endif
++#ifdef bfd_get_section_size
+ 	size = bfd_get_section_size(section);
++#else
++	size = bfd_section_size(section);
++#endif
++
+ 
+ 	if (pc < vma || pc >= vma + size)
+ 		return;
